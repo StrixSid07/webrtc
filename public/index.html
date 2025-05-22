@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebRTC Room Join</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body class="bg-gray-100 text-gray-900">
+    <div class="max-w-4xl mx-auto py-10 px-4">
+      <h2 class="text-3xl font-bold text-center mb-6">WebRTC Host / Viewer</h2>
+      <div
+        class="flex flex-col md:flex-row items-center justify-center gap-4 mb-6"
+      >
+        <input
+          type="text"
+          id="roomInput"
+          placeholder="Enter Room ID"
+          class="border border-gray-300 rounded-lg px-4 py-2 w-full md:w-64"
+        />
+        <button
+          onclick="start(true)"
+          class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg shadow"
+        >
+          Start as Host
+        </button>
+        <button
+          onclick="start(false)"
+          class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg shadow"
+        >
+          Start as Viewer
+        </button>
+      </div>
+
+      <div class="flex flex-col md:flex-row items-center justify-center gap-4">
+        <div class="flex flex-col items-center">
+          <h3 class="font-semibold text-lg">Local Video</h3>
+          <video
+            id="localVideo"
+            autoplay
+            muted
+            class="rounded-lg shadow-lg border border-gray-300 w-full max-w-sm"
+          ></video>
+          <span class="text-sm mt-1">(You)</span>
+        </div>
+        <div class="flex flex-col items-center">
+          <h3 class="font-semibold text-lg">Remote Video</h3>
+          <video
+            id="remoteVideo"
+            autoplay
+            class="rounded-lg shadow-lg border border-gray-300 w-full max-w-sm"
+          ></video>
+          <span class="text-sm mt-1">(Peer)</span>
+        </div>
+      </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      const socket = io();
+      let peerConnection;
+      let isHost = false;
+      let remoteSocketId = null;
+
+      const config = {
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      };
+
+      const localVideo = document.getElementById("localVideo");
+      const remoteVideo = document.getElementById("remoteVideo");
+
+      function start(host) {
+        isHost = host;
+        const roomId = document.getElementById("roomInput").value.trim();
+        if (!roomId) {
+          alert("Enter a room ID");
+          return;
+        }
+
+        socket.emit("join-room", { roomId });
+
+        if (isHost) {
+          navigator.mediaDevices
+            .getUserMedia({ video: true, audio: true })
+            .then((stream) => {
+              localVideo.srcObject = stream;
+              peerConnection = createPeerConnection();
+              stream
+                .getTracks()
+                .forEach((track) => peerConnection.addTrack(track, stream));
+            });
+        } else {
+          peerConnection = createPeerConnection();
+        }
+      }
+
+      function createPeerConnection() {
+        const pc = new RTCPeerConnection(config);
+
+        pc.onicecandidate = (event) => {
+          if (event.candidate && remoteSocketId) {
+            socket.emit("ice-candidate", {
+              to: remoteSocketId,
+              candidate: event.candidate,
+            });
+          }
+        };
+
+        pc.ontrack = (event) => {
+          remoteVideo.srcObject = event.streams[0];
+        };
+
+        return pc;
+      }
+
+      socket.on("existing-users", async (users) => {
+        if (isHost || users.length === 0) return;
+        remoteSocketId = users[0]; // Viewers pick first host
+      });
+
+      socket.on("user-joined", async (id) => {
+        if (isHost) {
+          remoteSocketId = id;
+          const offer = await peerConnection.createOffer();
+          await peerConnection.setLocalDescription(offer);
+          socket.emit("offer", { to: id, sdp: offer });
+        }
+      });
+
+      socket.on("offer", async (data) => {
+        remoteSocketId = data.from;
+        await peerConnection.setRemoteDescription(
+          new RTCSessionDescription(data.sdp)
+        );
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+        socket.emit("answer", { to: data.from, sdp: answer });
+      });
+
+      socket.on("answer", async (data) => {
+        await peerConnection.setRemoteDescription(
+          new RTCSessionDescription(data.sdp)
+        );
+      });
+
+      socket.on("ice-candidate", async (data) => {
+        try {
+          await peerConnection.addIceCandidate(data.candidate);
+        } catch (e) {
+          console.error("ICE candidate error", e);
+        }
+      });
+
+      socket.on("user-left", (id) => {
+        console.log("User left:", id);
+        if (id === remoteSocketId) {
+          remoteVideo.srcObject = null;
+          remoteSocketId = null;
+        }
+      });
+    </script>
+  </body>
+</html>
