@@ -67,18 +67,14 @@
     <script src="/socket.io/socket.io.js"></script>
     <script>
       const socket = io();
-      let peerConnection;
       let isHost = false;
-      let localStream;
-      let remoteSocketId;
+      let localStream = null;
+      let peerConnections = {}; // For host: socketId => RTCPeerConnection
+      let remoteSocketId = null; // For viewer
       let pendingCandidates = [];
 
       const config = {
-        iceServers: [
-          { urls: "stun:stun.l.google.com:19302" },
-          // You can add TURN servers here for better NAT traversal:
-          // { urls: 'turn:your.turn.server:3478', username: 'user', credential: 'pass' },
-        ],
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
       };
 
       const localVideo = document.getElementById("localVideo");
@@ -108,13 +104,6 @@
               audio: true,
             });
             localVideo.srcObject = localStream;
-
-            peerConnection = createPeerConnection();
-
-            localStream.getTracks().forEach((track) => {
-              peerConnection.addTrack(track, localStream);
-            });
-
             stopBtn.classList.remove("hidden");
             setStatus("Waiting for viewers to join...");
           } catch (err) {
@@ -122,7 +111,8 @@
             setStatus("Error getting media");
           }
         } else {
-          peerConnection = createPeerConnection();
+          const pc = createPeerConnection(null); // Viewer has only 1 PC
+          peerConnections["host"] = pc; // Dummy key for viewer
           setStatus("Waiting for host's stream...");
         }
       }
@@ -133,22 +123,22 @@
           localVideo.srcObject = null;
           localStream = null;
         }
-        if (peerConnection) {
-          peerConnection.close();
-          peerConnection = null;
+        for (let id in peerConnections) {
+          peerConnections[id].close();
         }
+        peerConnections = {};
         socket.emit("stop-stream");
         stopBtn.classList.add("hidden");
         setStatus("Stream stopped");
       }
 
-      function createPeerConnection() {
+      function createPeerConnection(remoteId) {
         const pc = new RTCPeerConnection(config);
 
         pc.onicecandidate = (event) => {
-          if (event.candidate && remoteSocketId) {
+          if (event.candidate) {
             socket.emit("ice-candidate", {
-              to: remoteSocketId,
+              to: remoteId || remoteSocketId,
               candidate: event.candidate,
             });
           }
@@ -174,13 +164,12 @@
           }
         };
 
-        // Handle renegotiation for host (if needed)
         pc.onnegotiationneeded = async () => {
-          if (isHost && remoteSocketId) {
+          if (isHost && remoteId) {
             try {
               const offer = await pc.createOffer();
               await pc.setLocalDescription(offer);
-              socket.emit("offer", { to: remoteSocketId, sdp: offer });
+              socket.emit("offer", { to: remoteId, sdp: offer });
             } catch (e) {
               console.error("Negotiation error:", e);
             }
@@ -190,33 +179,25 @@
         return pc;
       }
 
-      // ICE candidate queue helper
-      async function setRemoteDescriptionAndFlushCandidates(sdp) {
-        await peerConnection.setRemoteDescription(
-          new RTCSessionDescription(sdp)
-        );
-        for (const candidate of pendingCandidates) {
-          try {
-            await peerConnection.addIceCandidate(candidate);
-          } catch (e) {
-            console.warn("Error adding ICE candidate", e);
-          }
-        }
-        pendingCandidates = [];
-      }
-
       socket.on("existing-users", async (users) => {
-        if (isHost || users.length === 0) return;
-        remoteSocketId = users[0];
-        setStatus("Found host. Preparing connection...");
+        if (!isHost && users.length > 0) {
+          remoteSocketId = users[0];
+          setStatus("Found host. Preparing connection...");
+        }
       });
 
       socket.on("user-joined", async (id) => {
-        if (isHost) {
-          remoteSocketId = id;
+        if (isHost && localStream) {
+          const pc = createPeerConnection(id);
+          peerConnections[id] = pc;
+
+          localStream.getTracks().forEach((track) => {
+            pc.addTrack(track, localStream);
+          });
+
           try {
-            const offer = await peerConnection.createOffer();
-            await peerConnection.setLocalDescription(offer);
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
             socket.emit("offer", { to: id, sdp: offer });
           } catch (e) {
             console.error("Offer error:", e);
@@ -226,10 +207,11 @@
 
       socket.on("offer", async (data) => {
         remoteSocketId = data.from;
+        const pc = peerConnections["host"];
         try {
-          await setRemoteDescriptionAndFlushCandidates(data.sdp);
-          const answer = await peerConnection.createAnswer();
-          await peerConnection.setLocalDescription(answer);
+          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
           socket.emit("answer", { to: data.from, sdp: answer });
         } catch (e) {
           console.error("Answer error:", e);
@@ -237,24 +219,26 @@
       });
 
       socket.on("answer", async (data) => {
-        try {
-          await peerConnection.setRemoteDescription(
-            new RTCSessionDescription(data.sdp)
-          );
-        } catch (e) {
-          console.error("Set remote description error:", e);
+        const pc = peerConnections[data.from];
+        if (pc) {
+          try {
+            await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+          } catch (e) {
+            console.error("Set remote description error:", e);
+          }
         }
       });
 
       socket.on("ice-candidate", async (data) => {
-        try {
-          if (peerConnection.remoteDescription) {
-            await peerConnection.addIceCandidate(data.candidate);
-          } else {
-            pendingCandidates.push(data.candidate);
+        const pc = peerConnections[data.from || "host"];
+        if (pc) {
+          try {
+            await pc.addIceCandidate(data.candidate);
+          } catch (e) {
+            console.error("Error adding ICE candidate:", e);
           }
-        } catch (e) {
-          console.error("Error adding ICE candidate:", e);
+        } else {
+          pendingCandidates.push(data.candidate);
         }
       });
 
@@ -275,12 +259,14 @@
       });
 
       socket.on("user-left", (id) => {
+        if (peerConnections[id]) {
+          peerConnections[id].close();
+          delete peerConnections[id];
+        }
         if (remoteSocketId === id) {
           setStatus("Viewer disconnected.");
-          if (remoteVideo.srcObject) {
-            remoteVideo.srcObject.getTracks().forEach((t) => t.stop());
-            remoteVideo.srcObject = null;
-          }
+          remoteVideo.srcObject?.getTracks().forEach((t) => t.stop());
+          remoteVideo.srcObject = null;
           remoteSocketId = null;
         }
       });

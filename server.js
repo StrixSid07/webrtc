@@ -6,14 +6,14 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "*",
+    origin: "*", // Change in production!
   },
 });
 
 app.use(express.static("public"));
 const PORT = process.env.PORT || 3000;
 
-const roomHosts = new Map(); // track host socket per room
+const roomHosts = new Map(); // roomId -> socketId of host
 
 io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
@@ -34,7 +34,6 @@ io.on("connection", (socket) => {
       roomHosts.set(roomId, socket.id);
     }
 
-    // Get all clients in room excluding current socket
     const clients = [...(io.sockets.adapter.rooms.get(roomId) || [])];
     const otherUsers = clients.filter((id) => id !== socket.id);
 

@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>WebRTC Viewer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body class="bg-gray-100 text-gray-900">
+    <div class="max-w-4xl mx-auto p-6">
+      <h1 class="text-3xl font-bold text-center mb-6">WebRTC Viewer</h1>
+
+      <div class="flex gap-4 mb-4">
+        <input
+          id="roomInput"
+          type="text"
+          placeholder="Room ID"
+          class="border rounded px-4 py-2 w-full"
+        />
+        <button
+          onclick="startViewer()"
+          class="bg-green-600 text-white px-4 py-2 rounded"
+        >
+          Join as Viewer
+        </button>
+      </div>
+
+      <p id="status" class="text-center text-sm text-gray-600 mb-4"></p>
+
+      <div>
+        <h2 class="font-semibold">Remote Video</h2>
+        <video
+          id="remoteVideo"
+          autoplay
+          playsinline
+          class="rounded shadow w-full"
+        ></video>
+      </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      const socket = io();
+      let pc = null; // Peer connection for this viewer
+      const config = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+
+      const roomInput = document.getElementById("roomInput");
+      const status = document.getElementById("status");
+      const remoteVideo = document.getElementById("remoteVideo");
+
+      function setStatus(msg) {
+        status.textContent = msg;
+      }
+
+      function startViewer() {
+        const roomId = roomInput.value.trim();
+        if (!roomId) {
+          alert("Enter Room ID");
+          return;
+        }
+
+        setStatus("Joining as viewer...");
+        socket.emit("join-room", { roomId, isHost: false });
+      }
+
+      function createPeerConnection(hostId) {
+        const peer = new RTCPeerConnection(config);
+
+        peer.onicecandidate = (e) => {
+          if (e.candidate) {
+            socket.emit("ice-candidate", {
+              to: hostId,
+              candidate: e.candidate,
+            });
+          }
+        };
+
+        peer.ontrack = (e) => {
+          console.log("Received track:", e.streams[0]);
+          remoteVideo.srcObject = e.streams[0];
+          setStatus("Connected to host!");
+        };
+
+        return peer;
+      }
+
+      // When we get an offer from the host
+      socket.on("offer", async (data) => {
+        setStatus("Received offer from host.");
+        // Clean up existing connection if any
+        if (pc) {
+          pc.close();
+        }
+
+        // Create a new peer connection for the host
+        pc = createPeerConnection(data.from);
+
+        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        socket.emit("answer", { to: data.from, sdp: answer });
+      });
+
+      socket.on("ice-candidate", async (data) => {
+        if (pc) {
+          try {
+            await pc.addIceCandidate(data.candidate);
+          } catch (e) {
+            console.error("Error adding ICE candidate:", e);
+          }
+        }
+      });
+
+      socket.on("stop-stream", () => {
+        setStatus("Host stopped streaming.");
+        if (remoteVideo.srcObject) {
+          remoteVideo.srcObject.getTracks().forEach((t) => t.stop());
+          remoteVideo.srcObject = null;
+        }
+      });
+
+      socket.on("host-disconnected", () => {
+        setStatus("Host disconnected.");
+        if (remoteVideo.srcObject) {
+          remoteVideo.srcObject.getTracks().forEach((t) => t.stop());
+          remoteVideo.srcObject = null;
+        }
+      });
+    </script>
+  </body>
+</html>
