@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!-- <!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -123,6 +123,357 @@
         if (remoteVideo.srcObject) {
           remoteVideo.srcObject.getTracks().forEach((t) => t.stop());
           remoteVideo.srcObject = null;
+        }
+      });
+    </script>
+  </body>
+</html> -->
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>WebRTC Viewer - Enhanced</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body class="bg-gray-900 text-white min-h-screen">
+    <div class="max-w-6xl mx-auto p-6">
+      <h1
+        class="text-4xl font-bold text-center mb-8 bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent"
+      >
+        WebRTC Stream Viewer
+      </h1>
+
+      <!-- Control Panel -->
+      <div class="bg-gray-800 rounded-lg p-6 mb-6">
+        <div class="flex gap-4 mb-4">
+          <input
+            id="roomInput"
+            type="text"
+            placeholder="Enter Room ID"
+            class="bg-gray-700 border border-gray-600 rounded px-4 py-2 flex-1 text-white placeholder-gray-400"
+          />
+          <button
+            id="joinBtn"
+            onclick="joinAsViewer()"
+            class="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded transition-colors"
+          >
+            Join Stream
+          </button>
+          <button
+            id="leaveBtn"
+            onclick="leaveRoom()"
+            class="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded hidden transition-colors"
+          >
+            Leave
+          </button>
+        </div>
+
+        <!-- Status Display -->
+        <div class="flex justify-between items-center">
+          <div id="status" class="text-sm text-gray-400">
+            Ready to join stream...
+          </div>
+          <div id="connectionState" class="text-sm text-blue-400 hidden">
+            🔄 Connecting...
+          </div>
+        </div>
+      </div>
+
+      <!-- Video Section -->
+      <div class="bg-gray-800 rounded-lg p-6 mb-6">
+        <h2 class="text-xl font-semibold mb-4">Live Stream</h2>
+        <div class="relative">
+          <video
+            id="remoteVideo"
+            autoplay
+            playsinline
+            class="w-full rounded-lg shadow-lg bg-gray-700"
+          ></video>
+          <div
+            id="videoPlaceholder"
+            class="absolute inset-0 flex items-center justify-center bg-gray-700 rounded-lg"
+          >
+            <div class="text-center text-gray-400">
+              <div class="text-6xl mb-4">📺</div>
+              <div class="text-lg">Waiting for stream...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Connection Info -->
+      <div class="bg-gray-800 rounded-lg p-6">
+        <h3 class="text-lg font-semibold mb-4">Connection Log</h3>
+        <div
+          id="connectionLog"
+          class="max-h-48 overflow-y-auto text-sm text-gray-300 space-y-1"
+        >
+          <div class="text-gray-500">Waiting for connection...</div>
+        </div>
+      </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      const socket = io();
+      let peerConnection = null;
+      let currentRoomId = null;
+      let currentHostId = null;
+
+      const config = {
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" },
+          { urls: "stun:stun1.l.google.com:19302" },
+        ],
+      };
+
+      // UI Elements
+      const roomInput = document.getElementById("roomInput");
+      const joinBtn = document.getElementById("joinBtn");
+      const leaveBtn = document.getElementById("leaveBtn");
+      const status = document.getElementById("status");
+      const connectionState = document.getElementById("connectionState");
+      const remoteVideo = document.getElementById("remoteVideo");
+      const videoPlaceholder = document.getElementById("videoPlaceholder");
+      const connectionLog = document.getElementById("connectionLog");
+
+      function setStatus(msg, type = "info") {
+        status.textContent = msg;
+        status.className = `text-sm ${
+          type === "error"
+            ? "text-red-400"
+            : type === "success"
+            ? "text-green-400"
+            : "text-gray-400"
+        }`;
+        logConnection(`[STATUS] ${msg}`);
+      }
+
+      function setConnectionState(state) {
+        const states = {
+          connecting: { text: "🔄 Connecting...", color: "text-yellow-400" },
+          connected: { text: "✅ Connected", color: "text-green-400" },
+          disconnected: { text: "❌ Disconnected", color: "text-red-400" },
+          reconnecting: {
+            text: "🔄 Reconnecting...",
+            color: "text-orange-400",
+          },
+        };
+
+        const stateInfo = states[state] || {
+          text: state,
+          color: "text-gray-400",
+        };
+        connectionState.textContent = stateInfo.text;
+        connectionState.className = `text-sm ${stateInfo.color}`;
+        connectionState.classList.remove("hidden");
+      }
+
+      function logConnection(message) {
+        const log = document.createElement("div");
+        log.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+        connectionLog.appendChild(log);
+        connectionLog.scrollTop = connectionLog.scrollHeight;
+      }
+
+      function joinAsViewer() {
+        const roomId = roomInput.value.trim();
+        if (!roomId) {
+          alert("Please enter a Room ID");
+          return;
+        }
+
+        setStatus("Joining room...");
+        setConnectionState("connecting");
+        socket.emit("join-as-viewer", { roomId });
+      }
+
+      function leaveRoom() {
+        if (peerConnection) {
+          peerConnection.close();
+          peerConnection = null;
+        }
+
+        if (remoteVideo.srcObject) {
+          remoteVideo.srcObject.getTracks().forEach((track) => track.stop());
+          remoteVideo.srcObject = null;
+        }
+
+        videoPlaceholder.classList.remove("hidden");
+        setStatus("Left room");
+        setConnectionState("disconnected");
+
+        joinBtn.classList.remove("hidden");
+        leaveBtn.classList.add("hidden");
+        roomInput.disabled = false;
+
+        currentRoomId = null;
+        currentHostId = null;
+
+        logConnection("[LEAVE] Left the room");
+      }
+
+      function createPeerConnection(hostId) {
+        const pc = new RTCPeerConnection(config);
+
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+            socket.emit("send-ice-candidate", {
+              targetId: hostId,
+              candidate: event.candidate,
+            });
+          }
+        };
+
+        pc.ontrack = (event) => {
+          logConnection("[STREAM] Received video stream from host");
+          remoteVideo.srcObject = event.streams[0];
+          videoPlaceholder.classList.add("hidden");
+          setConnectionState("connected");
+          setStatus("🔴 Watching live stream", "success");
+        };
+
+        pc.onconnectionstatechange = () => {
+          logConnection(`[PEER] Connection state: ${pc.connectionState}`);
+
+          switch (pc.connectionState) {
+            case "connecting":
+              setConnectionState("connecting");
+              break;
+            case "connected":
+              socket.emit("connection-established", { targetId: hostId });
+              break;
+            case "disconnected":
+            case "failed":
+              setConnectionState("disconnected");
+              setStatus("Connection lost", "error");
+              break;
+          }
+        };
+
+        return pc;
+      }
+
+      // Socket event handlers
+      socket.on("viewer-response", (response) => {
+        if (response.success) {
+          currentRoomId = response.data.roomId;
+          currentHostId = response.data.hostId;
+
+          setStatus(`Joined room successfully! Waiting for host...`, "success");
+
+          joinBtn.classList.add("hidden");
+          leaveBtn.classList.remove("hidden");
+          roomInput.disabled = true;
+
+          if (response.data.isHostStreaming) {
+            setStatus("Host is streaming! Preparing connection...", "success");
+          }
+        } else {
+          setStatus(`Failed to join: ${response.message}`, "error");
+          setConnectionState("disconnected");
+        }
+      });
+
+      socket.on("host-streaming", (response) => {
+        if (response.success) {
+          setStatus(
+            "Host started streaming! Establishing connection...",
+            "success"
+          );
+          setConnectionState("connecting");
+        }
+      });
+
+      socket.on("receive-offer", async (response) => {
+        if (response.success) {
+          try {
+            logConnection(
+              `[OFFER] Received offer from host ${response.data.hostId}`
+            );
+
+            // Clean up existing connection
+            if (peerConnection) {
+              peerConnection.close();
+            }
+
+            // Create new peer connection
+            peerConnection = createPeerConnection(response.data.hostId);
+
+            // Set remote description and create answer
+            await peerConnection.setRemoteDescription(
+              new RTCSessionDescription(response.data.offer)
+            );
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+
+            // Send answer back to host
+            socket.emit("send-answer", {
+              hostId: response.data.hostId,
+              answer: answer,
+            });
+
+            logConnection("[ANSWER] Sent answer to host");
+          } catch (error) {
+            logConnection(`[ERROR] Failed to handle offer: ${error.message}`);
+            setStatus("Connection failed", "error");
+          }
+        }
+      });
+
+      socket.on("receive-ice-candidate", async (response) => {
+        if (response.success && peerConnection) {
+          try {
+            await peerConnection.addIceCandidate(
+              new RTCIceCandidate(response.data.candidate)
+            );
+          } catch (error) {
+            logConnection(
+              `[ERROR] Failed to add ICE candidate: ${error.message}`
+            );
+          }
+        }
+      });
+
+      socket.on("host-connected", (response) => {
+        if (response.success) {
+          logConnection("[SUCCESS] Fully connected to host");
+          setStatus("🔴 Connected to live stream", "success");
+        }
+      });
+
+      socket.on("host-stopped", (response) => {
+        if (response.success) {
+          setStatus("Host stopped streaming", "info");
+          videoPlaceholder.classList.remove("hidden");
+          if (remoteVideo.srcObject) {
+            remoteVideo.srcObject = null;
+          }
+          setConnectionState("disconnected");
+          logConnection("[STREAM] Host stopped streaming");
+        }
+      });
+
+      socket.on("host-disconnected", (response) => {
+        if (response.success) {
+          setStatus("Host disconnected from room", "error");
+          leaveRoom();
+          logConnection("[HOST] Host disconnected - room closed");
+        }
+      });
+
+      socket.on("webrtc-error", (response) => {
+        if (!response.success) {
+          logConnection(`[ERROR] WebRTC Error: ${response.message}`);
+          setStatus(`Connection error: ${response.message}`, "error");
+        }
+      });
+
+      // Cleanup on page unload
+      window.addEventListener("beforeunload", () => {
+        if (peerConnection) {
+          peerConnection.close();
         }
       });
     </script>

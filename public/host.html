@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!-- <!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -162,6 +162,363 @@
           peerConnections[id].close();
           delete peerConnections[id];
           setStatus(`Viewer ${id} left.`);
+        }
+      });
+    </script>
+  </body>
+</html> -->
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>WebRTC Host - Enhanced</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body class="bg-gray-900 text-white min-h-screen">
+    <div class="max-w-6xl mx-auto p-6">
+      <h1
+        class="text-4xl font-bold text-center mb-8 bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent"
+      >
+        WebRTC Broadcasting Host
+      </h1>
+
+      <!-- Control Panel -->
+      <div class="bg-gray-800 rounded-lg p-6 mb-6">
+        <div class="flex gap-4 mb-4">
+          <input
+            id="roomInput"
+            type="text"
+            placeholder="Enter Room ID"
+            class="bg-gray-700 border border-gray-600 rounded px-4 py-2 flex-1 text-white placeholder-gray-400"
+          />
+          <button
+            id="joinBtn"
+            onclick="joinAsHost()"
+            class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded transition-colors"
+          >
+            Create Room
+          </button>
+          <button
+            id="startBtn"
+            onclick="startStreaming()"
+            class="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded hidden transition-colors"
+          >
+            Start Stream
+          </button>
+          <button
+            id="stopBtn"
+            onclick="stopStreaming()"
+            class="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded hidden transition-colors"
+          >
+            Stop Stream
+          </button>
+        </div>
+
+        <!-- Status Display -->
+        <div class="flex justify-between items-center">
+          <div id="status" class="text-sm text-gray-400">
+            Ready to create room...
+          </div>
+          <div id="viewerCount" class="text-sm text-blue-400 hidden">
+            👥 0 viewers
+          </div>
+        </div>
+      </div>
+
+      <!-- Video Section -->
+      <div class="bg-gray-800 rounded-lg p-6 mb-6">
+        <h2 class="text-xl font-semibold mb-4">Your Stream</h2>
+        <video
+          id="localVideo"
+          autoplay
+          muted
+          playsinline
+          class="w-full rounded-lg shadow-lg bg-gray-700"
+        ></video>
+      </div>
+
+      <!-- Connection Log -->
+      <div class="bg-gray-800 rounded-lg p-6">
+        <h3 class="text-lg font-semibold mb-4">Connection Log</h3>
+        <div
+          id="connectionLog"
+          class="max-h-48 overflow-y-auto text-sm text-gray-300 space-y-1"
+        >
+          <div class="text-gray-500">Waiting for connections...</div>
+        </div>
+      </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      const socket = io();
+      let localStream = null;
+      let peerConnections = new Map(); // viewerId -> RTCPeerConnection
+      let currentRoomId = null;
+      let isStreaming = false;
+
+      const config = {
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" },
+          { urls: "stun:stun1.l.google.com:19302" },
+        ],
+      };
+
+      // UI Elements
+      const roomInput = document.getElementById("roomInput");
+      const joinBtn = document.getElementById("joinBtn");
+      const startBtn = document.getElementById("startBtn");
+      const stopBtn = document.getElementById("stopBtn");
+      const status = document.getElementById("status");
+      const viewerCount = document.getElementById("viewerCount");
+      const localVideo = document.getElementById("localVideo");
+      const connectionLog = document.getElementById("connectionLog");
+
+      function setStatus(msg, type = "info") {
+        status.textContent = msg;
+        status.className = `text-sm ${
+          type === "error"
+            ? "text-red-400"
+            : type === "success"
+            ? "text-green-400"
+            : "text-gray-400"
+        }`;
+        logConnection(`[STATUS] ${msg}`);
+      }
+
+      function updateViewerCount(count) {
+        viewerCount.textContent = `👥 ${count} viewer${count !== 1 ? "s" : ""}`;
+        viewerCount.classList.remove("hidden");
+      }
+
+      function logConnection(message) {
+        const log = document.createElement("div");
+        log.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+        connectionLog.appendChild(log);
+        connectionLog.scrollTop = connectionLog.scrollHeight;
+      }
+
+      async function joinAsHost() {
+        const roomId = roomInput.value.trim();
+        if (!roomId) {
+          alert("Please enter a Room ID");
+          return;
+        }
+
+        setStatus("Creating room...");
+        socket.emit("join-as-host", { roomId });
+      }
+
+      async function startStreaming() {
+        try {
+          setStatus("Requesting camera access...");
+
+          localStream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+              frameRate: { ideal: 30, max: 60 },
+            },
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+            },
+          });
+
+          localVideo.srcObject = localStream;
+
+          socket.emit("start-streaming");
+        } catch (error) {
+          setStatus(`Camera error: ${error.message}`, "error");
+          logConnection(`[ERROR] Camera access failed: ${error.message}`);
+        }
+      }
+
+      function stopStreaming() {
+        if (localStream) {
+          localStream.getTracks().forEach((track) => track.stop());
+          localStream = null;
+          localVideo.srcObject = null;
+        }
+
+        // Close all peer connections
+        peerConnections.forEach((pc, viewerId) => {
+          pc.close();
+          logConnection(`[DISCONNECT] Closed connection to viewer ${viewerId}`);
+        });
+        peerConnections.clear();
+
+        socket.emit("stop-streaming");
+      }
+
+      async function createPeerConnection(viewerId) {
+        const pc = new RTCPeerConnection(config);
+
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+            socket.emit("send-ice-candidate", {
+              targetId: viewerId,
+              candidate: event.candidate,
+            });
+          }
+        };
+
+        pc.onconnectionstatechange = () => {
+          logConnection(
+            `[PEER] Connection to ${viewerId}: ${pc.connectionState}`
+          );
+
+          if (pc.connectionState === "connected") {
+            socket.emit("connection-established", { targetId: viewerId });
+          } else if (
+            pc.connectionState === "failed" ||
+            pc.connectionState === "disconnected"
+          ) {
+            peerConnections.delete(viewerId);
+          }
+        };
+
+        // Add local stream to peer connection
+        if (localStream) {
+          localStream.getTracks().forEach((track) => {
+            pc.addTrack(track, localStream);
+          });
+        }
+
+        peerConnections.set(viewerId, pc);
+        return pc;
+      }
+
+      // Socket event handlers
+      socket.on("host-response", (response) => {
+        if (response.success) {
+          currentRoomId = response.data.roomId;
+          setStatus(
+            `Room created successfully! Room ID: ${currentRoomId}`,
+            "success"
+          );
+
+          joinBtn.classList.add("hidden");
+          startBtn.classList.remove("hidden");
+          roomInput.disabled = true;
+
+          updateViewerCount(0);
+        } else {
+          setStatus(`Failed to create room: ${response.message}`, "error");
+        }
+      });
+
+      socket.on("streaming-response", (response) => {
+        if (response.success) {
+          if (response.message.includes("started")) {
+            isStreaming = true;
+            setStatus("🔴 LIVE - Broadcasting to viewers", "success");
+            startBtn.classList.add("hidden");
+            stopBtn.classList.remove("hidden");
+          } else if (response.message.includes("stopped")) {
+            isStreaming = false;
+            setStatus("Stream stopped", "info");
+            stopBtn.classList.add("hidden");
+            startBtn.classList.remove("hidden");
+          }
+        } else {
+          setStatus(`Streaming error: ${response.message}`, "error");
+        }
+      });
+
+      socket.on("viewer-joined", (response) => {
+        if (response.success) {
+          updateViewerCount(response.data.viewersCount);
+          logConnection(`[JOIN] New viewer ${response.data.viewerId} joined`);
+
+          // Only create offer if we're currently streaming
+          if (isStreaming && localStream) {
+            createOfferForViewer(response.data.viewerId);
+          }
+        }
+      });
+
+      async function createOfferForViewer(viewerId) {
+        try {
+          const pc = await createPeerConnection(viewerId);
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+
+          socket.emit("send-offer", {
+            viewerId: viewerId,
+            offer: offer,
+          });
+
+          logConnection(`[OFFER] Sent offer to viewer ${viewerId}`);
+        } catch (error) {
+          logConnection(
+            `[ERROR] Failed to create offer for ${viewerId}: ${error.message}`
+          );
+        }
+      }
+
+      socket.on("receive-answer", async (response) => {
+        if (response.success) {
+          const { viewerId, answer } = response.data;
+          const pc = peerConnections.get(viewerId);
+
+          if (pc) {
+            try {
+              await pc.setRemoteDescription(new RTCSessionDescription(answer));
+              logConnection(`[ANSWER] Received answer from viewer ${viewerId}`);
+            } catch (error) {
+              logConnection(
+                `[ERROR] Failed to set remote description for ${viewerId}: ${error.message}`
+              );
+            }
+          }
+        }
+      });
+
+      socket.on("receive-ice-candidate", async (response) => {
+        if (response.success) {
+          const { fromId, candidate } = response.data;
+          const pc = peerConnections.get(fromId);
+
+          if (pc) {
+            try {
+              await pc.addIceCandidate(new RTCIceCandidate(candidate));
+            } catch (error) {
+              logConnection(
+                `[ERROR] Failed to add ICE candidate from ${fromId}: ${error.message}`
+              );
+            }
+          }
+        }
+      });
+
+      socket.on("viewer-connected", (response) => {
+        if (response.success) {
+          logConnection(
+            `[SUCCESS] Viewer ${response.data.viewerId} fully connected`
+          );
+        }
+      });
+
+      socket.on("viewer-disconnected", (response) => {
+        if (response.success) {
+          const viewerId = response.data.viewerId;
+
+          if (peerConnections.has(viewerId)) {
+            peerConnections.get(viewerId).close();
+            peerConnections.delete(viewerId);
+          }
+
+          updateViewerCount(response.data.viewersCount);
+          logConnection(`[LEAVE] Viewer ${viewerId} disconnected`);
+        }
+      });
+
+      // Cleanup on page unload
+      window.addEventListener("beforeunload", () => {
+        if (isStreaming) {
+          stopStreaming();
         }
       });
     </script>

@@ -1,13 +1,37 @@
 {
-  "name": "webrtc-server",
-  "version": "1.0.0",
-  "description": "Minimal WebRTC signaling server with Socket.IO",
+  "name": "webrtc-streaming-server",
+  "version": "2.0.0",
+  "description": "WebRTC streaming server with API-like socket messages for multi-platform support",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
+  "keywords": [
+    "webrtc",
+    "streaming",
+    "socket.io",
+    "broadcasting",
+    "multi-platform",
+    "unity",
+    "react",
+    "android"
+  ],
   "dependencies": {
     "express": "^4.18.2",
-    "socket.io": "^4.7.2"
+    "socket.io": "^4.7.4"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "author": "Sid Sutariya",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/StrixSid07/webrtc"
   }
 }
