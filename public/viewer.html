@@ -133,7 +133,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>WebRTC Viewer - Enhanced</title>
+    <title>WebRTC Viewer - Fixed</title>
     <script src="https://cdn.tailwindcss.com"></script>
   </head>
   <body class="bg-gray-900 text-white min-h-screen">
@@ -141,7 +141,7 @@
       <h1
         class="text-4xl font-bold text-center mb-8 bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent"
       >
-        WebRTC Stream Viewer
+        WebRTC Stream Viewer - Fixed
       </h1>
 
       <!-- Control Panel -->
@@ -184,21 +184,41 @@
       <div class="bg-gray-800 rounded-lg p-6 mb-6">
         <h2 class="text-xl font-semibold mb-4">Live Stream</h2>
         <div class="relative">
+          <!-- Video element with better configuration -->
           <video
             id="remoteVideo"
             autoplay
             playsinline
-            class="w-full rounded-lg shadow-lg bg-gray-700"
+            controls
+            style="
+              width: 100%;
+              height: 400px;
+              background: #374151;
+              border-radius: 8px;
+              display: none;
+            "
           ></video>
+
+          <!-- Placeholder -->
           <div
             id="videoPlaceholder"
-            class="absolute inset-0 flex items-center justify-center bg-gray-700 rounded-lg"
+            class="flex items-center justify-center bg-gray-700 rounded-lg"
+            style="height: 400px; width: 100%"
           >
             <div class="text-center text-gray-400">
               <div class="text-6xl mb-4">📺</div>
               <div class="text-lg">Waiting for stream...</div>
+              <div id="debugInfo" class="text-xs mt-2 text-gray-500"></div>
             </div>
           </div>
+        </div>
+
+        <!-- Video Debug Info -->
+        <div class="mt-4 text-sm text-gray-400">
+          <div>Video Ready State: <span id="videoReadyState">-</span></div>
+          <div>Video Duration: <span id="videoDuration">-</span></div>
+          <div>Video Dimensions: <span id="videoDimensions">-</span></div>
+          <div>Stream Tracks: <span id="streamTracks">-</span></div>
         </div>
       </div>
 
@@ -237,6 +257,26 @@
       const remoteVideo = document.getElementById("remoteVideo");
       const videoPlaceholder = document.getElementById("videoPlaceholder");
       const connectionLog = document.getElementById("connectionLog");
+      const debugInfo = document.getElementById("debugInfo");
+
+      // Debug elements
+      const videoReadyState = document.getElementById("videoReadyState");
+      const videoDuration = document.getElementById("videoDuration");
+      const videoDimensions = document.getElementById("videoDimensions");
+      const streamTracks = document.getElementById("streamTracks");
+
+      function updateVideoDebugInfo() {
+        videoReadyState.textContent = remoteVideo.readyState;
+        videoDuration.textContent = remoteVideo.duration || "N/A";
+        videoDimensions.textContent = `${remoteVideo.videoWidth}x${remoteVideo.videoHeight}`;
+
+        if (remoteVideo.srcObject) {
+          const tracks = remoteVideo.srcObject.getTracks();
+          streamTracks.textContent = tracks
+            .map((t) => `${t.kind}:${t.readyState}`)
+            .join(", ");
+        }
+      }
 
       function setStatus(msg, type = "info") {
         status.textContent = msg;
@@ -277,6 +317,47 @@
         connectionLog.scrollTop = connectionLog.scrollHeight;
       }
 
+      function showVideo() {
+        logConnection("[VIDEO] Attempting to show video");
+
+        // Force video to be visible
+        videoPlaceholder.style.display = "none";
+        remoteVideo.style.display = "block";
+
+        // Try to play the video
+        const playPromise = remoteVideo.play();
+        if (playPromise !== undefined) {
+          playPromise
+            .then(() => {
+              logConnection("[VIDEO] Video playback started successfully");
+              updateVideoDebugInfo();
+            })
+            .catch((error) => {
+              logConnection(`[VIDEO ERROR] Play failed: ${error.message}`);
+              // Try muted playback
+              remoteVideo.muted = true;
+              return remoteVideo.play();
+            })
+            .then(() => {
+              logConnection("[VIDEO] Muted playback started");
+              updateVideoDebugInfo();
+            })
+            .catch((error) => {
+              logConnection(
+                `[VIDEO ERROR] Muted play also failed: ${error.message}`
+              );
+            });
+        }
+
+        updateVideoDebugInfo();
+      }
+
+      function hideVideo() {
+        videoPlaceholder.style.display = "flex";
+        remoteVideo.style.display = "none";
+        logConnection("[VIDEO] Video display hidden");
+      }
+
       function joinAsViewer() {
         const roomId = roomInput.value.trim();
         if (!roomId) {
@@ -300,7 +381,7 @@
           remoteVideo.srcObject = null;
         }
 
-        videoPlaceholder.classList.remove("hidden");
+        hideVideo();
         setStatus("Left room");
         setConnectionState("disconnected");
 
@@ -327,11 +408,72 @@
         };
 
         pc.ontrack = (event) => {
-          logConnection("[STREAM] Received video stream from host");
-          remoteVideo.srcObject = event.streams[0];
-          videoPlaceholder.classList.add("hidden");
-          setConnectionState("connected");
-          setStatus("🔴 Watching live stream", "success");
+          logConnection("[STREAM] Received track event from host");
+
+          const stream = event.streams[0];
+          if (!stream) {
+            logConnection("[ERROR] No stream in track event");
+            return;
+          }
+
+          logConnection(
+            `[STREAM] Stream has ${stream.getTracks().length} tracks`
+          );
+
+          // Set the stream to video element
+          remoteVideo.srcObject = stream;
+
+          // Update debug info immediately
+          updateVideoDebugInfo();
+
+          // Set up event listeners for video element
+          remoteVideo.onloadstart = () => {
+            logConnection("[VIDEO] Load start");
+            debugInfo.textContent = "Loading...";
+          };
+
+          remoteVideo.onloadeddata = () => {
+            logConnection("[VIDEO] Loaded data");
+            debugInfo.textContent = "Data loaded";
+            updateVideoDebugInfo();
+          };
+
+          remoteVideo.onloadedmetadata = () => {
+            logConnection("[VIDEO] Loaded metadata");
+            debugInfo.textContent = "Metadata loaded";
+            updateVideoDebugInfo();
+            showVideo();
+          };
+
+          remoteVideo.oncanplay = () => {
+            logConnection("[VIDEO] Can play");
+            debugInfo.textContent = "Ready to play";
+            updateVideoDebugInfo();
+            showVideo();
+          };
+
+          remoteVideo.onplaying = () => {
+            logConnection("[VIDEO] Playing");
+            debugInfo.textContent = "Playing";
+            setConnectionState("connected");
+            setStatus("🔴 Watching live stream", "success");
+            updateVideoDebugInfo();
+          };
+
+          remoteVideo.onerror = (e) => {
+            logConnection(
+              `[VIDEO ERROR] ${e.target.error?.message || "Unknown error"}`
+            );
+            debugInfo.textContent = `Error: ${
+              e.target.error?.message || "Unknown"
+            }`;
+          };
+
+          // Force show video after a delay
+          setTimeout(() => {
+            logConnection("[VIDEO] Force showing video after 1 second");
+            showVideo();
+          }, 1000);
         };
 
         pc.onconnectionstatechange = () => {
@@ -348,6 +490,7 @@
             case "failed":
               setConnectionState("disconnected");
               setStatus("Connection lost", "error");
+              hideVideo();
               break;
           }
         };
@@ -446,7 +589,7 @@
       socket.on("host-stopped", (response) => {
         if (response.success) {
           setStatus("Host stopped streaming", "info");
-          videoPlaceholder.classList.remove("hidden");
+          hideVideo();
           if (remoteVideo.srcObject) {
             remoteVideo.srcObject = null;
           }
@@ -469,6 +612,9 @@
           setStatus(`Connection error: ${response.message}`, "error");
         }
       });
+
+      // Update debug info periodically
+      setInterval(updateVideoDebugInfo, 1000);
 
       // Cleanup on page unload
       window.addEventListener("beforeunload", () => {
